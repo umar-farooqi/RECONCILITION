@@ -1,0 +1,113 @@
+WITH 
+-- Step 1: Clean and normalize Excel data from collection
+cleaned_excel AS (
+    SELECT 
+        seq_id AS excel_row_id,
+        REGEXP_SUBSTR(c005, '^[0-9]+') AS L,  -- Extract account code from LEVEL5
+        -- Clean opening debit (O_DR - Column F)
+        CASE 
+            WHEN c006 IS NULL THEN 0
+            WHEN TRIM(c006) = '' THEN 0
+            WHEN TRIM(c006) = '-' THEN 0
+            WHEN REGEXP_LIKE(
+                REPLACE(REPLACE(REPLACE(TRIM(c006), ',', ''), ' ', ''), '-', ''), 
+                '^[0-9]+\.?[0-9]*$'
+            )
+                THEN ABS(TO_NUMBER(REPLACE(REPLACE(REPLACE(TRIM(c006), ',', ''), ' ', ''), '-', '')))
+            ELSE 0
+        END AS excel_opening_debit,
+        -- Clean opening credit (O_CR - Column G)
+        CASE 
+            WHEN c007 IS NULL THEN 0
+            WHEN TRIM(c007) = '' THEN 0
+            WHEN TRIM(c007) = '-' THEN 0
+            WHEN REGEXP_LIKE(
+                REPLACE(REPLACE(REPLACE(TRIM(c007), ',', ''), ' ', ''), '-', ''), 
+                '^[0-9]+\.?[0-9]*$'
+            )
+                THEN ABS(TO_NUMBER(REPLACE(REPLACE(REPLACE(TRIM(c007), ',', ''), ' ', ''), '-', '')))
+            ELSE 0
+        END AS excel_opening_credit,
+        -- Clean current debit (C_DR - Column H)
+        CASE 
+            WHEN c008 IS NULL THEN 0
+            WHEN TRIM(c008) = '' THEN 0
+            WHEN TRIM(c008) = '-' THEN 0
+            WHEN REGEXP_LIKE(
+                REPLACE(REPLACE(REPLACE(TRIM(c008), ',', ''), ' ', ''), '-', ''), 
+                '^[0-9]+\.?[0-9]*$'
+            )
+                THEN ABS(TO_NUMBER(REPLACE(REPLACE(REPLACE(TRIM(c008), ',', ''), ' ', ''), '-', '')))
+            ELSE 0
+        END AS excel_current_debit,
+        -- Clean current credit (C_CR - Column I)
+        CASE 
+            WHEN c009 IS NULL THEN 0
+            WHEN TRIM(c009) = '' THEN 0
+            WHEN TRIM(c009) = '-' THEN 0
+            WHEN REGEXP_LIKE(
+                REPLACE(REPLACE(REPLACE(TRIM(c009), ',', ''), ' ', ''), '-', ''), 
+                '^[0-9]+\.?[0-9]*$'
+            )
+                THEN ABS(TO_NUMBER(REPLACE(REPLACE(REPLACE(TRIM(c009), ',', ''), ' ', ''), '-', '')))
+            ELSE 0
+        END AS excel_current_credit,
+        ROW_NUMBER() OVER (ORDER BY seq_id) AS excel_seq
+    FROM apex_collections
+    WHERE collection_name = 'REC'
+),
+
+-- COA_ALL_LEVELS
+LEVEL_TOTALS AS (
+ 
+SELECT * FROM RECONCILATION_TRIAL_SHEET
+WHERE REFERENCE_CODE = NVL(:P972_REF_CODE,REFERENCE_CODE)
+AND   
+    TRUNC(VOUCHER_DATE) BETWEEN NVL(TO_DATE(:P66_FROM_DATE, 'DD-MON-YYYY'), TRUNC(VOUCHER_DATE))
+     AND NVL(TO_DATE(:P66_TO_DATE, 'DD-MON-YYYY'), TRUNC(VOUCHER_DATE))
+)
+,
+-- Step 2: Get APEX account data with sequence number
+apex_data AS (
+    SELECT 
+        DISPLAY_LEVEL,
+        ACCOUNT_ID,
+        ACCOUNT_TITLE,
+        REFERENCE_CODE,
+        NVL(OPENING_DEBIT,0) AS apex_opening_debit,
+        NVL(OPENING_CREDIT,0) AS apex_opening_credit,
+        NVL(CURRENT_DEBIT,0) AS apex_current_debit,
+        NVL(CURRENT_CREDIT,0) AS apex_current_credit,
+        ROW_NUMBER() OVER (ORDER BY ACCOUNT_ID) AS apex_seq
+    FROM LEVEL_TOTALS
+    WHERE ACCOUNT_ID IS NOT NULL
+    AND REFERENCE_CODE = NVL(:P972_REF_CODE, REFERENCE_CODE)
+),
+
+-- Step 3: Match by account code (L = REFERENCE_CODE)
+matched_records AS (
+    SELECT 
+        ad.apex_seq,
+        ex.excel_seq,
+        ad.REFERENCE_CODE AS apex_account_code,
+        ex.L AS excel_account_code,
+        ad.ACCOUNT_TITLE,
+        ad.apex_opening_debit,
+        ex.excel_opening_debit,
+        ad.apex_opening_credit,
+        ex.excel_opening_credit,
+        ad.apex_current_debit,
+        ex.excel_current_debit,
+        ad.apex_current_credit,
+        ex.excel_current_credit,
+        (ad.apex_opening_debit - ex.excel_opening_debit) AS opening_debit_variance,
+        (ad.apex_opening_credit - ex.excel_opening_credit) AS opening_credit_variance,
+        (ad.apex_current_debit - ex.excel_current_debit) AS current_debit_variance,
+        (ad.apex_current_credit - ex.excel_current_credit) AS current_credit_variance,
+        'MATCHED' AS status
+    FROM apex_data ad
+    INNER JOIN cleaned_excel ex ON ad.REFERENCE_CODE = ex.L
+)--,
+
+select * from matched_records
+
